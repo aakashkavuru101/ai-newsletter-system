@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 import json
 from content_generator import ContentGenerator
+from email_service import EmailService
+from scheduler import NewsletterScheduler
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend connection
@@ -22,8 +24,10 @@ LISTMONK_URL = os.environ.get('LISTMONK_URL', 'http://localhost:9000')
 LISTMONK_USERNAME = os.environ.get('LISTMONK_USERNAME', 'admin')
 LISTMONK_PASSWORD = os.environ.get('LISTMONK_PASSWORD', 'admin')
 
-# Initialize content generator
+# Initialize services
 content_generator = ContentGenerator()
+email_service = EmailService()
+newsletter_scheduler = NewsletterScheduler(content_generator, email_service, DATABASE_PATH)
 
 # Available AI newsletter topics
 AVAILABLE_TOPICS = [
@@ -284,101 +288,171 @@ def health_check():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'database': 'connected' if os.path.exists(DATABASE_PATH) else 'not_initialized',
-        'perplexity_api': 'configured' if content_generator.is_configured() else 'not_configured'
+        'perplexity_api': 'configured' if content_generator.is_configured() else 'not_configured',
+        'email_service': 'configured' if email_service.is_configured() else 'not_configured'
     })
 
 @app.route('/api/scheduler-status', methods=['GET'])
 def scheduler_status():
     """Check scheduler status"""
+    status = newsletter_scheduler.get_status()
     return jsonify({
         'success': True,
-        'scheduler_running': False,  # Will implement actual scheduler later
-        'next_run': None,
-        'last_run': None
+        'scheduler_running': status['running'],
+        'next_run': status['next_run'],
+        'last_run': status['last_run'],
+        'scheduled_jobs': status['scheduled_jobs']
     })
 
 @app.route('/api/start-scheduler', methods=['POST'])
 def start_scheduler():
-    """Start weekly scheduler (placeholder)"""
+    """Start weekly scheduler"""
+    success, message = newsletter_scheduler.start()
     return jsonify({
-        'success': True,
-        'message': 'Scheduler start requested (implementation pending)',
-        'scheduler_running': False
+        'success': success,
+        'message': message,
+        'scheduler_running': newsletter_scheduler.is_running
     })
 
 @app.route('/api/stop-scheduler', methods=['POST'])
 def stop_scheduler():
-    """Stop scheduler (placeholder)"""
+    """Stop scheduler"""
+    success, message = newsletter_scheduler.stop()
     return jsonify({
-        'success': True,
-        'message': 'Scheduler stop requested (implementation pending)',
-        'scheduler_running': False
+        'success': success,
+        'message': message,
+        'scheduler_running': newsletter_scheduler.is_running
     })
 
 @app.route('/api/generate-newsletters', methods=['POST'])
 def generate_newsletters():
-    """Generate newsletters for all active subscribers"""
+    """Generate newsletters for all active subscribers (manual trigger)"""
     try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
+        success, message = newsletter_scheduler.manual_run()
         
-        # Get all active subscribers grouped by topics to optimize API calls
-        cursor.execute('SELECT email, topics FROM subscribers WHERE active = 1')
-        subscribers = cursor.fetchall()
-        
-        if not subscribers:
+        if success:
+            # Get count of newsletters generated
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT COUNT(*) FROM newsletter_logs WHERE DATE(sent_at) = DATE("now")')
+            today_count = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(DISTINCT subscriber_email) FROM newsletter_logs WHERE DATE(sent_at) = DATE("now")')
+            subscriber_count = cursor.fetchone()[0]
+            
+            conn.close()
+            
             return jsonify({
                 'success': True,
-                'message': 'No active subscribers found',
-                'newsletters_generated': 0
+                'message': message,
+                'newsletters_generated': today_count,
+                'subscribers_reached': subscriber_count
             })
-        
-        # Group subscribers by topic combinations to minimize content generation
-        topic_groups = {}
-        for email, topics_json in subscribers:
-            topics_key = topics_json  # Use JSON string as key
-            if topics_key not in topic_groups:
-                topic_groups[topics_key] = []
-            topic_groups[topics_key].append(email)
-        
-        generated_count = 0
-        
-        # Generate content for each unique topic combination
-        for topics_json, emails in topic_groups.items():
-            topics = json.loads(topics_json)
-            content = content_generator.generate_newsletter_content(topics)
-            
-            # Log the generated newsletter for each subscriber
-            for email in emails:
-                cursor.execute(
-                    'INSERT INTO newsletter_logs (subscriber_email, topics, content, success) VALUES (?, ?, ?, ?)',
-                    (email, topics_json, json.dumps(content), True)
-                )
-                generated_count += 1
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Generated newsletters for {generated_count} subscribers',
-            'newsletters_generated': generated_count,
-            'unique_content_generated': len(topic_groups)
-        })
+        else:
+            return jsonify({
+                'success': False,
+                'error': message
+            }), 500
     
     except Exception as e:
         return jsonify({'success': False, 'error': 'Failed to generate newsletters'}), 500
 
 @app.route('/api/email-service-status', methods=['GET'])
 def email_service_status():
-    """Check email service status (placeholder for Listmonk integration)"""
+    """Check email service status"""
     return jsonify({
         'success': True,
         'email_service': 'listmonk',
-        'status': 'not_configured',
+        'status': 'configured' if email_service.is_configured() else 'not_configured',
         'url': LISTMONK_URL,
-        'message': 'Listmonk integration pending'
+        'message': 'Listmonk is ready for email delivery' if email_service.is_configured() else 'Listmonk not configured or not accessible'
     })
+
+@app.route('/api/sync-subscribers', methods=['POST'])
+def sync_subscribers():
+    """Sync subscribers to email service"""
+    try:
+        if not email_service.is_configured():
+            return jsonify({
+                'success': False,
+                'error': 'Email service not configured'
+            }), 503
+        
+        # Get all active subscribers
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT email, topics FROM subscribers WHERE active = 1')
+        rows = cursor.fetchall()
+        
+        subscribers = []
+        for row in rows:
+            subscribers.append({
+                'email': row[0],
+                'topics': json.loads(row[1])
+            })
+        
+        conn.close()
+        
+        # Sync to email service
+        results = email_service.sync_subscribers(subscribers)
+        
+        return jsonify({
+            'success': True,
+            'results': results,
+            'total_subscribers': len(subscribers)
+        })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': 'Failed to sync subscribers'}), 500
+
+@app.route('/api/send-test-newsletter', methods=['POST'])
+def send_test_newsletter():
+    """Send a test newsletter"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'Invalid JSON data'}), 400
+        
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'error': 'Email is required'}), 400
+        
+        if not validate_email(email):
+            return jsonify({'success': False, 'error': 'Invalid email address'}), 400
+        
+        if not email_service.is_configured():
+            return jsonify({
+                'success': False,
+                'error': 'Email service not configured'
+            }), 503
+        
+        # Generate test content
+        test_topics = ['LLMs released this week', 'Coding tools and IDEs']
+        content = content_generator.generate_newsletter_content(test_topics)
+        
+        # Generate HTML content
+        html_content = email_service.generate_html_content(content)
+        
+        # For testing, just return the content structure
+        # In a real implementation, you would send via email service
+        return jsonify({
+            'success': True,
+            'message': 'Test newsletter content generated',
+            'email': email,
+            'content_preview': {
+                'subject': content['subject'],
+                'sections_count': len(content['sections']),
+                'html_length': len(html_content)
+            },
+            'note': 'Email service integration ready - would send actual email in production'
+        })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': 'Failed to send test newsletter'}), 500
 
 @app.errorhandler(404)
 def not_found(error):
