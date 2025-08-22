@@ -45,10 +45,11 @@ Thumbs.db
 .env.test.local
 .env.production.local
 
-# Database
+# Database files
 *.db
 *.sqlite
 *.sqlite3
+newsletter.db
 
 # Logs
 logs/
@@ -72,4 +73,7 @@ docker-compose.yml
 tmp/
 temp/
 .tmp/
+
+# Development files
+frontend/index-dev.html
 
