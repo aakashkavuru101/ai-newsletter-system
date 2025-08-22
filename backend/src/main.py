@@ -113,6 +113,11 @@ def home():
             'generate_content': '/api/generate-content (POST)'
         },
         'documentation': 'See IMPLEMENTATION.md for full API documentation',
+        'production_notes': {
+            'https_setup': 'Set SSL_CERT_PATH and SSL_KEY_PATH environment variables for HTTPS',
+            'frontend_proxy': 'Ensure frontend connects via HTTP in development, HTTPS in production',
+            'cors': 'CORS is enabled for cross-origin requests'
+        },
         'timestamp': datetime.now().isoformat()
     })
 
@@ -503,8 +508,18 @@ if __name__ == '__main__':
     # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
     
+    # Check for SSL configuration (for production use)
+    ssl_context = None
+    if os.environ.get('SSL_CERT_PATH') and os.environ.get('SSL_KEY_PATH'):
+        ssl_context = (os.environ.get('SSL_CERT_PATH'), os.environ.get('SSL_KEY_PATH'))
+        print(f"SSL context configured - server will run with HTTPS")
+    
     print(f"Starting AI Newsletter Backend on port {port}")
     print(f"Database path: {DATABASE_PATH}")
     print(f"CORS enabled for frontend connections")
+    if ssl_context:
+        print(f"Running with SSL/TLS support")
+    else:
+        print(f"Running in HTTP mode (set SSL_CERT_PATH and SSL_KEY_PATH for HTTPS)")
     
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True, ssl_context=ssl_context)
