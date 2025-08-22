@@ -3,7 +3,7 @@ AI Newsletter Backend - Main Flask Application
 Provides REST API for newsletter subscription and content generation
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import sqlite3
 import os
@@ -95,6 +95,45 @@ def validate_topics(topics):
             return False, f"Invalid topic: {topic}"
     
     return True, None
+
+@app.route('/', methods=['GET'])
+def home():
+    """Homepage with API information"""
+    return jsonify({
+        'success': True,
+        'message': 'AI Newsletter Backend API',
+        'version': '1.0.0',
+        'description': 'REST API for AI newsletter subscription and content generation',
+        'endpoints': {
+            'health': '/api/health',
+            'topics': '/api/topics',
+            'subscribe': '/api/subscribe (POST)',
+            'subscribers': '/api/subscribers',
+            'test_content': '/api/test-content',
+            'generate_content': '/api/generate-content (POST)'
+        },
+        'documentation': 'See IMPLEMENTATION.md for full API documentation',
+        'production_notes': {
+            'https_setup': 'Set SSL_CERT_PATH and SSL_KEY_PATH environment variables for HTTPS',
+            'frontend_proxy': 'Ensure frontend connects via HTTP in development, HTTPS in production',
+            'cors': 'CORS is enabled for cross-origin requests'
+        },
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/favicon.ico')
+def favicon():
+    """Serve favicon.ico file"""
+    try:
+        # Look for favicon.ico in the project root (two levels up from src/)
+        favicon_path = os.path.join(os.path.dirname(__file__), '..', '..', 'favicon.ico')
+        if os.path.exists(favicon_path):
+            return send_file(favicon_path, mimetype='image/x-icon')
+        else:
+            # If favicon doesn't exist, return a 204 No Content response
+            return '', 204
+    except Exception:
+        return '', 204
 
 @app.route('/api/topics', methods=['GET'])
 def get_topics():
@@ -469,8 +508,18 @@ if __name__ == '__main__':
     # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
     
+    # Check for SSL configuration (for production use)
+    ssl_context = None
+    if os.environ.get('SSL_CERT_PATH') and os.environ.get('SSL_KEY_PATH'):
+        ssl_context = (os.environ.get('SSL_CERT_PATH'), os.environ.get('SSL_KEY_PATH'))
+        print(f"SSL context configured - server will run with HTTPS")
+    
     print(f"Starting AI Newsletter Backend on port {port}")
     print(f"Database path: {DATABASE_PATH}")
     print(f"CORS enabled for frontend connections")
+    if ssl_context:
+        print(f"Running with SSL/TLS support")
+    else:
+        print(f"Running in HTTP mode (set SSL_CERT_PATH and SSL_KEY_PATH for HTTPS)")
     
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True, ssl_context=ssl_context)
